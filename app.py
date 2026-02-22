@@ -1,6 +1,7 @@
 import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import threading
 
 from config import ConfigReader
 from stt_worker import VoskSTTWorker
@@ -41,46 +42,76 @@ class App(tk.Tk):
     def _build_ui(self):
         top = ttk.Frame(self, padding=10)
         top.pack(side=tk.TOP, fill=tk.X)
+        row = 0
 
         # Model path
-        ttk.Label(top, text="Model folder:").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, text="Model folder:").grid(row=row, column=0, sticky="w")
         self.model_var = tk.StringVar(value="")
         self.model_entry = ttk.Entry(top, textvariable=self.model_var, width=60)
-        self.model_entry.grid(row=0, column=1, sticky="we", padx=5)
+        self.model_entry.grid(row=row, column=1, sticky="we", padx=5)
 
-        ttk.Button(top, text="Browse…", command=self._browse_model).grid(row=0, column=2, padx=5)
-        ttk.Button(top, text="Refresh devices", command=self._refresh_devices).grid(row=0, column=3, padx=5)
+        ttk.Button(top, text="Browse…", command=self._browse_model).grid(row=row, column=2, padx=5)
+        row += 1
 
         # Device
-        ttk.Label(top, text="Input device:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(top, text="Input device:").grid(row=row, column=0, sticky="w", pady=(8, 0))
         self.device_var = tk.StringVar()
         self.device_combo = ttk.Combobox(top, textvariable=self.device_var, state="readonly", width=60)
-        self.device_combo.grid(row=1, column=1, sticky="we", padx=5, pady=(8, 0))
+        self.device_combo.grid(row=row, column=1, sticky="we", padx=5, pady=(8, 0))
         self.device_combo.bind("<<ComboboxSelected>>", self._on_device_changed)
+        ttk.Button(top, text="Refresh devices", command=self._refresh_devices).grid(row=row, column=2, padx=5, pady=(8, 0))
+        row += 1
 
         # Sample rate
-        ttk.Label(top, text="Sample rate:").grid(row=1, column=2, sticky="w", pady=(8, 0))
+        ttk.Label(top, text="Sample rate:").grid(row=row, column=0, sticky="w", pady=(8, 0))
         self.sr_var = tk.StringVar(value="16000")
         self.sr_entry = ttk.Entry(top, textvariable=self.sr_var, width=10)
         self.sr_entry.bind("<FocusOut>", self._on_sample_rate_changed)
         self.sr_entry.bind("<Return>", self._on_sample_rate_changed)
-        self.sr_entry.grid(row=1, column=3, sticky="w", padx=5, pady=(8, 0))
+        self.sr_entry.grid(row=row, column=1, sticky="w", padx=5, pady=(8, 0))
+        row += 1
 
-        # Start/Stop
+        # Button Controls
         btns = ttk.Frame(top)
-        btns.grid(row=2, column=0, columnspan=4, sticky="w", pady=(12, 0))
+        btns.grid(row=row, column=0, columnspan=4, sticky="w", pady=(12, 0))
+
+        self.preload_btn = ttk.Button(btns, text="Preload", command=self._preload_model)
+        self.preload_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.start_btn = ttk.Button(btns, text="Start", command=self._start)
         self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.stop_btn = ttk.Button(btns, text="Stop", command=self._stop, state="disabled")
-        self.stop_btn.pack(side=tk.LEFT)
+        self.stop_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.pause_btn = ttk.Button(btns, text="Pause", command=self._pause, state="disabled")
+        self.pause_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.resume_btn = ttk.Button(btns, text="Resume", command=self._resume, state="disabled")
+        self.resume_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.clear_btn = ttk.Button(btns, text="Clear", command=self._clear)
+        self.clear_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.save_btn = ttk.Button(btns, text="Save transcript…", command=self._save)
+        self.save_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         top.columnconfigure(1, weight=1)
 
         # Status
         self.status_var = tk.StringVar(value="Idle.")
-        ttk.Label(self, textvariable=self.status_var, padding=(10, 0)).pack(side=tk.TOP, anchor="w")
+        self.status_var2 = tk.StringVar(value="-")
+        self.status_var3 = tk.StringVar(value="-")
+
+        self.status_lbl1 = ttk.Label(self, textvariable=self.status_var, padding=(10, 0))
+        self.status_lbl1.pack(side=tk.TOP, anchor="w")
+
+        self.status_lbl2 = ttk.Label(self, textvariable=self.status_var2, padding=(10, 0))
+        self.status_lbl2.pack(side=tk.TOP, anchor="w")
+
+        self.status_lbl3 = ttk.Label(self, textvariable=self.status_var3, padding=(10, 0))
+        self.status_lbl3.pack(side=tk.TOP, anchor="w")
+        self.status_lbl3.configure(foreground="#888888")
 
         # Partial line
         partial_frame = ttk.Frame(self, padding=(10, 5))
@@ -93,25 +124,42 @@ class App(tk.Tk):
         mid = ttk.Frame(self, padding=10)
         mid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        self.text = tk.Text(mid, wrap="word")
+        self.text = tk.Text(mid, wrap="word", state="disabled")
         self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         scroll = ttk.Scrollbar(mid, command=self.text.yview)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.text.configure(yscrollcommand=scroll.set)
 
-        # Bottom buttons
-        bottom = ttk.Frame(self, padding=10)
-        bottom.pack(side=tk.BOTTOM, fill=tk.X)
-
-        ttk.Button(bottom, text="Clear", command=self._clear).pack(side=tk.LEFT)
-        ttk.Button(bottom, text="Save transcript…", command=self._save).pack(side=tk.LEFT, padx=(8, 0))
-
     def _browse_model(self):
         path = filedialog.askdirectory(title="Select Vosk model folder")
         if path:
             self.model_var.set(path)
             self._cfg.update_value("model_path", path)
+
+    def _preload_model(self):
+        model_path = self.model_var.get().strip()
+        if not model_path:
+            messagebox.showerror("Missing model", "Please select the Vosk model folder.")
+            return
+
+        # Disable button to prevent double-click preload
+        self.preload_btn.configure(state="disabled")
+        self.status_var.set("Preloading...")
+
+        def _task():
+            try:
+                # Send status updates back through the same UI queue
+                self._ui_q.put(("status", "Loading model..."))
+                self.worker.preload_model(model_path)
+                self._ui_q.put(("status", "Model loaded."))
+            except Exception as e:
+                self._ui_q.put(("status", f"Preload error: {e}"))
+            finally:
+                # Re-enable button from UI thread (via queue)
+                self._ui_q.put(("ui", ("preload_btn", "normal")))
+
+        threading.Thread(target=_task, daemon=True).start()
 
     def _refresh_devices(self):
         self._input_devices = list_input_devices()
@@ -181,14 +229,9 @@ class App(tk.Tk):
         if idx is None:
             return
 
-        # Save device index
+        # Save device configuration
         self._cfg.update_value("sound_device_index", str(idx))
-
-        # Optionally auto-update sample rate when device changes.
-        # If you want to preserve a manually-set sample rate, remove this call.
         self._update_sample_rate()
-
-        # If you DO auto-update, save it too:
         try:
             sr = int(self.sr_var.get().strip())
             self._cfg.update_value("sample_rate", sr)
@@ -232,18 +275,34 @@ class App(tk.Tk):
             messagebox.showerror("Invalid sample rate", "Sample rate must be a positive integer (e.g., 16000).")
             return
 
+        self.status_var.set("Starting...")
         self.worker.start(model_path=model_path, device_index=device_idx, sample_rate=sample_rate)
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self.status_var.set("Starting...")
+        self.pause_btn.configure(state="normal")
+        self.resume_btn.configure(state="disabled")
 
     def _stop(self):
         self.worker.stop()
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
+        self.pause_btn.configure(state="disabled")
+        self.resume_btn.configure(state="disabled")
+
+    def _pause(self):
+        self.worker.pause()
+        self.pause_btn.configure(state="disabled")
+        self.resume_btn.configure(state="normal")
+
+    def _resume(self):
+        self.worker.resume()
+        self.pause_btn.configure(state="normal")
+        self.resume_btn.configure(state="disabled")
 
     def _clear(self):
+        self.text.configure(state="normal")
         self.text.delete("1.0", tk.END)
+        self.text.configure(state="disabled")
         self.partial_var.set("")
 
     def _save(self):
@@ -264,12 +323,15 @@ class App(tk.Tk):
             while True:
                 msg_type, payload = self._ui_q.get_nowait()
                 if msg_type == "status":
-                    self.status_var.set(payload)
+                    self._push_status(payload)
                 elif msg_type == "partial":
                     self.partial_var.set(payload)
                 elif msg_type == "final":
-                    self.text.insert(tk.END, payload + "\n")
-                    self.text.see(tk.END)
+                    self._append_transcript(payload)
+                elif msg_type == "ui":
+                    widget_name, state = payload
+                    if widget_name == "preload_btn":
+                        self.preload_btn.configure(state=state)
         except queue.Empty:
             pass
 
@@ -279,6 +341,19 @@ class App(tk.Tk):
             self.stop_btn.configure(state="disabled")
 
         self.after(50, self._poll_ui_queue)
+
+    def _append_transcript(self, line: str):
+        self.text.configure(state="normal")
+        self.text.insert(tk.END, line + "\n")
+        self.text.see(tk.END)
+        self.text.configure(state="disabled")
+
+    def _push_status(self, text: str):
+        if text == self.status_var.get():
+            return
+        self.status_var3.set(self.status_var2.get())
+        self.status_var2.set(self.status_var.get())
+        self.status_var.set(text)
 
     def _on_close(self):
         try:
