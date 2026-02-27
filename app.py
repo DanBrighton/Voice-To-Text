@@ -2,6 +2,8 @@ import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
+import os
+import json
 
 from config import ConfigReader
 from stt_worker import VoskSTTWorker
@@ -10,6 +12,8 @@ from audio_devices import (
     get_default_input_device_index,
     safe_sample_rate_for_device,
 )
+from rules_engine import load_rules_json, RuleEngine
+from rules_editor import RulesEditor
 
 
 class App(tk.Tk):
@@ -27,16 +31,27 @@ class App(tk.Tk):
             on_status=lambda txt: self._ui_q.put(("status", txt)),
         )
 
+        # Build UI
         self._input_devices = []
         self._build_ui()
 
+        # Load Configuration
         self._cfg = ConfigReader()
         self.model_var.set(self._cfg.get_value("model_path") or "")
         self.sr_var.set(str(self._cfg.get_value("sample_rate") or 16000))
 
+        # Load rules
+        self.rules_path = "rules.json"
+        self._rules_cache = []  # list[dict]
+        self._load_rules()
+
+        # Load audio devices
         self._refresh_devices()
+
+        # Start thread work queue
         self._poll_ui_queue()
 
+        # Bind close to on close function
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self):
@@ -93,8 +108,11 @@ class App(tk.Tk):
         self.clear_btn = ttk.Button(btns, text="Clear", command=self._clear)
         self.clear_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.save_btn = ttk.Button(btns, text="Save transcript…", command=self._save)
+        self.save_btn = ttk.Button(btns, text="Save transcript", command=self._save)
         self.save_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.rules_btn = ttk.Button(btns, text="Edit Rules", command=self._open_rules_editor)
+        self.rules_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         top.columnconfigure(1, weight=1)
 
@@ -328,6 +346,7 @@ class App(tk.Tk):
                     self.partial_var.set(payload)
                 elif msg_type == "final":
                     self._append_transcript(payload)
+                    self._process_rules(payload)
                 elif msg_type == "ui":
                     widget_name, state = payload
                     if widget_name == "preload_btn":
@@ -354,6 +373,76 @@ class App(tk.Tk):
         self.status_var3.set(self.status_var2.get())
         self.status_var2.set(self.status_var.get())
         self.status_var.set(text)
+
+    def _process_rules(self, text: str):
+        def dispatch(action: str, param: str | None):
+            if action == "status" and param:
+                self._push_status(param)
+            elif action == "pause":
+                self._pause()
+            elif action == "resume":
+                self._resume()
+            elif action == "stop":
+                self._stop()
+            elif action == "log" and param:
+                self._append_transcript(f"[RULE] {param}")
+            else:
+                self._append_transcript(f"[RULE] Unknown action={action} param={param}")
+
+        self.rules_engine.process(text, dispatch)
+
+    def _load_rules(self):
+        if not os.path.exists(self.rules_path):
+            self._rules_cache = []
+            return
+        try:
+            with open(self.rules_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._rules_cache = data if isinstance(data, list) else []
+        except Exception:
+            self._rules_cache = []
+
+    def _open_rules_editor(self):
+        def on_saved(new_rules):
+            # Called after editor saves to disk
+            self._rules_cache = new_rules
+
+        RulesEditor(self, self.rules_path, on_save_callback=on_saved)
+
+    def _process_rules(self, text: str):
+        t_lower = text.lower()
+
+        for rule in self._rules_cache:
+            if not rule.get("enabled", True):
+                continue
+
+            mt = (rule.get("match_type") or "contains").lower()
+            pat = rule.get("pattern") or ""
+
+            matched = False
+            if mt == "contains":
+                matched = pat.lower() in t_lower
+            elif mt == "regex":
+                import re
+                matched = re.search(pat, text, flags=re.IGNORECASE) is not None
+
+            if not matched:
+                continue
+
+            for a in rule.get("actions", []) or []:
+                action = (a.get("action") or "").lower()
+                param = a.get("param")
+
+                if action == "status" and param:
+                    self._push_status(str(param))
+                elif action == "pause":
+                    self._pause()
+                elif action == "resume":
+                    self._resume()
+                elif action == "stop":
+                    self._stop()
+                elif action == "log" and param:
+                    self._append_transcript(f"[RULE] {param}")
 
     def _on_close(self):
         try:
