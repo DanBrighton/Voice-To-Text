@@ -57,7 +57,7 @@ class RulesEditor(tk.Toplevel):
         self.tree.heading("pattern", text="Pattern")
         self.tree.heading("actions", text="#Actions")
 
-        self.tree.column("enabled", width=70, anchor="center")
+        self.tree.column("enabled", width=30, anchor="center")
         self.tree.column("name", width=180)
         self.tree.column("match_type", width=90, anchor="center")
         self.tree.column("pattern", width=300)
@@ -112,7 +112,7 @@ class RulesEditor(tk.Toplevel):
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())
         for i, r in enumerate(self.rules):
-            enabled = "Yes" if r.get("enabled", True) else "No"
+            enabled = "✅" if r.get("enabled", True) else "❌"
             name = r.get("name", "")
             mt = r.get("match_type", "")
             pattern = r.get("pattern", "")
